@@ -155,36 +155,23 @@ if groq_api_key:
 คำถามจากผู้ใช้:
 {user_query}
 """
-                    answer = None
-                    last_err = None
-
-                    # ระบุเฉพาะโมเดล LLaMA มาตรฐานของ Groq ชัดเจนเพื่อป้องกัน Error
-                    models_to_try = [
-                        "llama-3.1-8b-instant",
-                        "llama-3.3-70b-versatile"
-                    ]
-
-                    for model_name in models_to_try:
-                        try:
-                            chat_completion = client.chat.completions.create(
-                                messages=[
-                                    {"role": "system", "content": "คุณคือผู้ช่วย AI ของ Coway Thailand ตอบเป็นภาษาไทยอย่างแม่นยำ"},
-                                    {"role": "user", "content": prompt}
-                                ],
-                                model=model_name,
-                            )
-                            answer = chat_completion.choices[0].message.content
-                            if answer:
-                                break
-                        except Exception as err:
-                            last_err = err
-                            continue
-
-                    if answer:
-                        st.markdown(answer)
-                        st.session_state.messages.append({"role": "assistant", "content": answer})
-                    else:
-                        st.error(f"เกิดข้อผิดพลาดในการเรียกใช้โมเดล: {last_err}")
+                    try:
+                        # เรียกใช้โมเดลมาตรฐานที่เร็วและรองรับบัญชีทั่วไป
+                        chat_completion = client.chat.completions.create(
+                            messages=[
+                                {"role": "system", "content": "คุณคือผู้ช่วย AI ของ Coway Thailand ตอบเป็นภาษาไทยอย่างแม่นยำ"},
+                                {"role": "user", "content": prompt}
+                            ],
+                            model="llama-3.1-8b-instant",
+                        )
+                        answer = chat_completion.choices[0].message.content
+                        if answer:
+                            st.markdown(answer)
+                            st.session_state.messages.append({"role": "assistant", "content": answer})
+                        else:
+                            st.error("ไม่สามารถสร้างคำตอบได้ กรุณาลองใหม่อีกครั้ง")
+                    except Exception as err:
+                        st.error(f"เกิดข้อผิดพลาดในการเรียกใช้โมเดล: {err}")
 
     except Exception as e:
         st.error(f"เกิดข้อผิดพลาดในการเชื่อมต่อ: {e}")
