@@ -20,7 +20,7 @@ with st.sidebar:
     else:
         groq_api_key = st.text_input("กรอก Groq API Key (ขึ้นต้นด้วย gsk_...):", type="password")
 
-    # เพิ่มตัวเลือกให้ผู้ใช้ลากไฟล์อัปโหลดเพิ่มได้เองที่หน้าเว็บด้วย
+    # ตัวเลือกให้ลากไฟล์อัปโหลดเพิ่มได้ชั่วคราว
     uploaded_files = st.file_uploader(
         "อัปโหลดไฟล์เพิ่มชั่วคราว (PDF, Word, Excel):",
         type=["pdf", "docx", "xlsx", "csv"],
@@ -76,7 +76,7 @@ def load_system_documents():
 # อ่านไฟล์ที่ฝังไว้ในระบบ
 system_context, system_files = load_system_documents()
 
-# อ่านไฟล์เพิ่มเติมที่ผู้ใช้อัปโหลดชั่วคราวหน้าเว็บ
+# อ่านไฟล์เพิ่มเติมที่อัปโหลดเพิ่มหน้าเว็บ
 user_context = ""
 if uploaded_files:
     import tempfile
@@ -158,13 +158,13 @@ if groq_api_key:
                     answer = None
                     last_err = None
 
-                    try:
-                        models_data = client.models.list()
-                        active_models = [m.id for m in models_data.data if m.id and "whisper" not in m.id and "guard" not in m.id]
-                    except Exception:
-                        active_models = ["llama-3.1-8b-instant", "llama-3.3-70b-versatile"]
+                    # ระบุเฉพาะโมเดล LLaMA มาตรฐานของ Groq ชัดเจนเพื่อป้องกัน Error
+                    models_to_try = [
+                        "llama-3.1-8b-instant",
+                        "llama-3.3-70b-versatile"
+                    ]
 
-                    for model_name in active_models:
+                    for model_name in models_to_try:
                         try:
                             chat_completion = client.chat.completions.create(
                                 messages=[
