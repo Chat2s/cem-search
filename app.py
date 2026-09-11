@@ -26,7 +26,7 @@ with st.sidebar:
         accept_multiple_files=True
     )
 
-# --- 2. ฟังก์ชันวิเคราะห์และนับจำนวนด้วย Pandas (ส่งเฉพาะสรุปสถิติตัวเลขให้ AI) ---
+# --- 2. ฟังก์ชันวิเคราะห์และนับจำนวนด้วย Pandas ---
 @st.cache_data(show_spinner=False)
 def get_all_file_paths():
     supported_extensions = ["*.xlsx", "*.csv", "*.pdf", "*.docx"]
@@ -47,7 +47,6 @@ with st.sidebar:
         st.warning("ไม่พบไฟล์เอกสารในระบบ")
 
 def analyze_and_summarize(query):
-    """ คำนวณยอดและสรุปสถิติด้วย Pandas ให้เสร็จเรียบร้อยก่อนส่งให้ AI เพื่อป้องกัน Token เกิน Limit """
     all_paths = get_all_file_paths()
     
     if uploaded_files:
@@ -76,27 +75,18 @@ def analyze_and_summarize(query):
                     total_rows = len(df)
                     summary_text += f"\n📁 **ไฟล์: {file_name} (แผ่นงาน: {sheet})** - รวมทั้งหมด {total_rows:,} รายการ\n"
 
-                    # แปลงข้อมูลคอลัมน์ทั้งหมดเป็นสตริงเพื่อสแกนหา pattern
                     df_str = df.astype(str)
 
-                    # 1. นับเคสเดือน 9 (Sep/September/09/ก.ย./กันยายน)
+                    # สแกนหาคำว่า 09, sep, กันยายน, ก.ย.
                     m9_mask = df_str.apply(lambda col: col.str.contains('09-202|/09/|-09-|sep|september|กันยายน|ก.ย.', case=False, na=False)).any(axis=1)
                     count_m9 = m9_mask.sum()
                     summary_text += f"- เคสในเดือน 9 (กันยายน / Sep / 09): **{count_m9:,} เคส**\n"
 
-                    # 2. ค้นหาคีย์เวิร์ดเฉพาะคำในคำถาม
                     q_words = [w.strip() for w in query.split() if len(w.strip()) > 1]
                     if q_words:
                         kw_mask = df_str.apply(lambda col: col.str.contains('|'.join(q_words), case=False, na=False)).any(axis=1)
                         count_kw = kw_mask.sum()
-                        summary_text += f"- เคสที่ตรงกับคีย์เวิร์ดในคำถาม '{query}': **{count_kw:,} เคส**\n"
-
-                    # 3. แจกแจงประเภท Complaint หรือ Product (ถ้ามีคอลัมน์สถิติ)
-                    for col in df.columns:
-                        col_lower = str(col).lower()
-                        if any(k in col_lower for k in ["type", "product", "category", "status", "ประเภท", "สินค้า"]):
-                            top_counts = df[col].value_counts().head(5).to_dict()
-                            summary_text += f"  - สรุปยอดตาม `{col}`: {top_counts}\n"
+                        summary_text += f"- เคสที่ตรงกับคำค้นหา '{query}': **{count_kw:,} เคส**\n"
 
             except Exception as e:
                 summary_text += f"ไม่สามารถประมวลผลไฟล์ {file_name} ได้: {e}\n"
@@ -139,11 +129,24 @@ if groq_api_key:
                     answer = None
                     last_err = None
 
-                    # ใช้โมเดล llama-3.1-8b-instant ที่รวดเร็วและใช้ Token น้อยที่สุด
-                    candidate_models = [
+                    # 1. ดึงรายชื่อโมเดลที่ใช้งานได้จริงในขณะนั้นโดยอัตโนมัติ
+                    try:
+                        models_data = client.models.list()
+                        active_models = [
+                            m.id for m in models_data.data 
+                            if m.id and not any(x in m.id.lower() for x in ["whisper", "guard", "orpheus", "vision", "audio", "safeguard"])
+                        ]
+                    except Exception:
+                        active_models = []
+
+                    # 2. รายการโมเดลสำรอง
+                    fallback_models = [
                         "llama-3.1-8b-instant",
-                        "llama-3.3-70b-versatile"
+                        "llama-3.3-70b-versatile",
+                        "groq/compound"
                     ]
+
+                    candidate_models = active_models + [m for m in fallback_models if m not in active_models]
 
                     for model_name in candidate_models:
                         try:
