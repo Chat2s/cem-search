@@ -9,10 +9,17 @@ st.set_page_config(page_title="CXM Internal AI Search", page_icon="🔍", layout
 st.title("🔍 CXM Knowledge AI Search - Coway Thailand")
 st.caption("ระบบค้นหาข้อมูลและตอบคำถามภายในแผนก Customer Experience Management")
 
-# แถบด้านข้างสำหรับใส่ API Key และอัปโหลดไฟล์
+# ดึง API Key จาก Secrets ถ้ามี หรือรับจาก Sidebar
+api_key_secret = st.secrets.get("GROQ_API_KEY", "")
+
 with st.sidebar:
     st.header("⚙️ การตั้งค่าระบบ")
-    groq_api_key = st.text_input("กรอก Groq API Key (ขึ้นต้นด้วย gsk_...):", type="password")
+    if api_key_secret:
+        groq_api_key = api_key_secret
+        st.success("🔑 เชื่อมต่อ Groq API Key กลางเรียบร้อยแล้ว")
+    else:
+        groq_api_key = st.text_input("กรอก Groq API Key (ขึ้นต้นด้วย gsk_...):", type="password")
+        
     uploaded_files = st.file_uploader(
         "อัปโหลดไฟล์คู่มือ / เอกสาร (PDF, Word, Excel):",
         type=["pdf", "docx", "xlsx", "csv"],
@@ -98,14 +105,12 @@ if uploaded_files and groq_api_key:
                     answer = None
                     last_err = None
 
-                    # 1. ดึงรายชื่อโมเดลที่พร้อมใช้งานจริงจาก Groq ในปัจจุบันอัตโนมัติ
                     try:
                         models_data = client.models.list()
                         active_models = [m.id for m in models_data.data if m.id and "whisper" not in m.id and "guard" not in m.id]
                     except Exception:
                         active_models = ["llama-3.1-8b-instant", "llama-3.3-70b-versatile"]
 
-                    # 2. วนลูปเรียกใช้โมเดลที่ใช้งานได้จริง
                     for model_name in active_models:
                         try:
                             chat_completion = client.chat.completions.create(
@@ -132,4 +137,4 @@ if uploaded_files and groq_api_key:
         st.error(f"เกิดข้อผิดพลาดในการเชื่อมต่อ: {e}")
 
 else:
-    st.info("👈 โปรดกรอก Groq API Key และอัปโหลดไฟล์เอกสารที่เมนูด้านซ้ายเพื่อเริ่มต้นใช้งาน")
+    st.info("👈 โปรดอัปโหลดไฟล์เอกสารที่เมนูด้านซ้ายเพื่อเริ่มต้นใช้งาน")
