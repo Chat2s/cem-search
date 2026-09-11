@@ -26,7 +26,7 @@ with st.sidebar:
         accept_multiple_files=True
     )
 
-# --- 2. ฟังก์ชันวิเคราะห์และนับข้อมูลแบบครอบคลุมทั้งไฟล์ ---
+# --- 2. ฟังก์ชันวิเคราะห์และนับจำนวนด้วย Pandas (ส่งเฉพาะสรุปสถิติตัวเลขให้ AI) ---
 @st.cache_data(show_spinner=False)
 def get_all_file_paths():
     supported_extensions = ["*.xlsx", "*.csv", "*.pdf", "*.docx"]
@@ -46,12 +46,10 @@ with st.sidebar:
     else:
         st.warning("ไม่พบไฟล์เอกสารในระบบ")
 
-def analyze_excel_data(query):
-    """ ให้ Pandas วนอ่านทุกแถวจนถึงแถวสุดท้าย และทำการสรุปสถิติให้ AI """
+def analyze_and_summarize(query):
+    """ คำนวณยอดและสรุปสถิติด้วย Pandas ให้เสร็จเรียบร้อยก่อนส่งให้ AI เพื่อป้องกัน Token เกิน Limit """
     all_paths = get_all_file_paths()
-    context_summary = ""
     
-    # รวมไฟล์อัปโหลดชั่วคราวด้วย
     if uploaded_files:
         import tempfile
         for u_file in uploaded_files:
@@ -62,9 +60,12 @@ def analyze_excel_data(query):
             if f_ext in [".xlsx", ".csv"]:
                 all_paths.append(tmp_p)
 
+    summary_text = ""
+
     for path in all_paths:
         file_name = os.path.basename(path)
         file_ext = os.path.splitext(file_name)[1].lower()
+
         if file_ext in [".xlsx", ".csv"]:
             try:
                 xls = pd.ExcelFile(path) if file_ext == ".xlsx" else None
@@ -73,29 +74,34 @@ def analyze_excel_data(query):
                 for sheet in sheet_names:
                     df = pd.read_excel(path, sheet_name=sheet) if xls else pd.read_csv(path)
                     total_rows = len(df)
-                    context_summary += f"\n=== สรุปไฟล์ {file_name} (แผ่นงาน: {sheet}) ทั้งหมด {total_rows} รายการ ===\n"
-                    
-                    # แปลงคอลัมน์ที่เป็นวันที่ให้อยู่ในรูปแบบ datetime เพื่อให้นับตามเดือนได้แม่นยำ
-                    date_cols = [col for col in df.columns if any(x in str(col).lower() for x in ["date", "time", "วัน", "เวลา"])]
-                    
-                    # ค้นหาคำว่า '09', 'sep', 'september' หรือ 'เดือน 9'
-                    filtered_df = df[df.astype(str).apply(lambda x: x.str.contains('09-202|sep|september|/09/|-09-', case=False, na=False)).any(axis=1)]
-                    sep_count = len(filtered_df)
-                    
-                    context_summary += f"- จำนวนเคสทั้งหมดในไฟล์: {total_rows} แถว\n"
-                    context_summary += f"- สแกนพบเคสที่มีข้อมูลเดือน 9 (Sep/September/09): รวม {sep_count} รายการ\n"
-                    
-                    # สุ่มตัวอย่าง 20 แถวจากเคสเดือน 9 เพื่อให้ AI เห็นโครงสร้าง
-                    if not filtered_df.empty:
-                        context_summary += "ตัวอย่างเคสเดือน 9:\n"
-                        for idx, row in filtered_df.head(25).iterrows():
-                            row_vals = " | ".join([f"{c}: {v}" for c, v in row.items() if pd.notna(v)])
-                            context_summary += f"  แถว {idx+1}: {row_vals}\n"
+                    summary_text += f"\n📁 **ไฟล์: {file_name} (แผ่นงาน: {sheet})** - รวมทั้งหมด {total_rows:,} รายการ\n"
+
+                    # แปลงข้อมูลคอลัมน์ทั้งหมดเป็นสตริงเพื่อสแกนหา pattern
+                    df_str = df.astype(str)
+
+                    # 1. นับเคสเดือน 9 (Sep/September/09/ก.ย./กันยายน)
+                    m9_mask = df_str.apply(lambda col: col.str.contains('09-202|/09/|-09-|sep|september|กันยายน|ก.ย.', case=False, na=False)).any(axis=1)
+                    count_m9 = m9_mask.sum()
+                    summary_text += f"- เคสในเดือน 9 (กันยายน / Sep / 09): **{count_m9:,} เคส**\n"
+
+                    # 2. ค้นหาคีย์เวิร์ดเฉพาะคำในคำถาม
+                    q_words = [w.strip() for w in query.split() if len(w.strip()) > 1]
+                    if q_words:
+                        kw_mask = df_str.apply(lambda col: col.str.contains('|'.join(q_words), case=False, na=False)).any(axis=1)
+                        count_kw = kw_mask.sum()
+                        summary_text += f"- เคสที่ตรงกับคีย์เวิร์ดในคำถาม '{query}': **{count_kw:,} เคส**\n"
+
+                    # 3. แจกแจงประเภท Complaint หรือ Product (ถ้ามีคอลัมน์สถิติ)
+                    for col in df.columns:
+                        col_lower = str(col).lower()
+                        if any(k in col_lower for k in ["type", "product", "category", "status", "ประเภท", "สินค้า"]):
+                            top_counts = df[col].value_counts().head(5).to_dict()
+                            summary_text += f"  - สรุปยอดตาม `{col}`: {top_counts}\n"
 
             except Exception as e:
-                context_summary += f"ไม่สามารถประมวลผลไฟล์ {file_name} ได้: {e}\n"
+                summary_text += f"ไม่สามารถประมวลผลไฟล์ {file_name} ได้: {e}\n"
 
-    return context_summary
+    return summary_text
 
 # --- 3. ประมวลผลและตอบคำถามด้วย Groq ---
 if groq_api_key:
@@ -117,15 +123,15 @@ if groq_api_key:
                 st.markdown(user_query)
 
             with st.chat_message("assistant"):
-                with st.spinner("กำลังสแกนอ่านไฟล์ Excel ครบทุกแถวจนถึงแถวสุดท้าย..."):
-                    context_data = analyze_excel_data(user_query)
+                with st.spinner("กำลังคำนวณและประมวลผลยอดสถิติจากทุกไฟล์..."):
+                    analytics_summary = analyze_and_summarize(user_query)
 
                     prompt = f"""คุณคือผู้ช่วย AI ประจำแผนก Customer Experience Management (CXM) ของบริษัท Coway Thailand
-โปรดใช้ผลสรุปการประมวลผลข้อมูลจากไฟล์ Excel ด้านล่างนี้ ตอบคำถามของผู้ใช้อย่างแม่นยำ
-ระบุจำนวนเคสเดือน 9 หรือตัวเลขที่ค้นพบตามผลสรุปสถิติจริง ห้ามตอบว่า 'ไม่มีข้อมูล' หากในผลสรุปมีจำนวนเคสระบุไว้
+โปรดใช้สรุปผลสถิติที่คำนวณจากไฟล์เอกสารด้านล่างนี้ ตอบคำถามของผู้ใช้อย่างเรียบร้อย สุภาพ และชัดเจน
+รายงานตัวเลขตามผลสรุปสถิติที่คำนวณมาได้อย่างแม่นยำ 100% ห้ามตอบว่าไม่มีข้อมูลหากมีตัวเลขปรากฏอยู่
 
-ผลสรุปสถิติจากการสแกนทุกแถวในเอกสาร:
-{context_data}
+สรุปผลสถิติตัวเลขจากระบบ:
+{analytics_summary}
 
 คำถามจากผู้ใช้:
 {user_query}
@@ -133,17 +139,17 @@ if groq_api_key:
                     answer = None
                     last_err = None
 
+                    # ใช้โมเดล llama-3.1-8b-instant ที่รวดเร็วและใช้ Token น้อยที่สุด
                     candidate_models = [
                         "llama-3.1-8b-instant",
-                        "llama-3.3-70b-versatile",
-                        "groq/compound"
+                        "llama-3.3-70b-versatile"
                     ]
 
                     for model_name in candidate_models:
                         try:
                             chat_completion = client.chat.completions.create(
                                 messages=[
-                                    {"role": "system", "content": "คุณคือผู้ช่วย AI ของ Coway Thailand ตอบเป็นภาษาไทยอย่างแม่นยำตามสถิติที่ได้รับ"},
+                                    {"role": "system", "content": "คุณคือผู้ช่วย AI ของ Coway Thailand ตอบรายงานสถิติตัวเลขเป็นภาษาไทยอย่างแม่นยำ"},
                                     {"role": "user", "content": prompt}
                                 ],
                                 model=model_name,
