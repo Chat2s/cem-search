@@ -20,7 +20,6 @@ with st.sidebar:
     else:
         groq_api_key = st.text_input("กรอก Groq API Key (ขึ้นต้นด้วย gsk_...):", type="password")
 
-    # ตัวเลือกให้ลากไฟล์อัปโหลดเพิ่มได้ชั่วคราว
     uploaded_files = st.file_uploader(
         "อัปโหลดไฟล์เพิ่มชั่วคราว (PDF, Word, Excel):",
         type=["pdf", "docx", "xlsx", "csv"],
@@ -115,6 +114,11 @@ if uploaded_files:
 # รวมเนื้อหาเอกสารทั้งหมด
 full_context = system_context + "\n" + user_context
 
+# ป้องกัน Rate Limit โดยการจำกัดขนาด Context ไม่ให้เกินขีดจำกัด TPM ของ Groq Free Tier
+MAX_CHAR_LIMIT = 20000
+if len(full_context) > MAX_CHAR_LIMIT:
+    full_context = full_context[:MAX_CHAR_LIMIT] + "\n\n...[ตัดข้อมูลบางส่วนเนื่องจากความยาวเกินกำหนด]..."
+
 # แสดงรายชื่อเอกสารบน Sidebar
 with st.sidebar:
     st.subheader("📚 เอกสารหลักในระบบ")
@@ -155,46 +159,22 @@ if groq_api_key:
 คำถามจากผู้ใช้:
 {user_query}
 """
-                    answer = None
-                    last_err = None
-
-                    # 1. ดึงรายชื่อโมเดลที่ใช้งานได้จริงจากระบบของ Groq แบบอัตโนมัติ
                     try:
-                        models_list = client.models.list()
-                        # กรองเอาโมเดลประมวลผลข้อความหลักที่เปิดใช้งานอยู่
-                        active_models = [
-                            m.id for m in models_list.data 
-                            if m.id and not any(x in m.id.lower() for x in ["whisper", "guard", "orpheus", "vision", "audio"])
-                        ]
-                    except Exception:
-                        active_models = []
-
-                    # หากดึงผ่าน API ไม่สำเร็จ ให้ใช้ fallback list ล่าสุด
-                    if not active_models:
-                        active_models = ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "groq/compound", "llama-3.1-8b-instant"]
-
-                    # 2. ทดลองส่งคำถามไปยังโมเดลที่ใช้งานได้จริงจนกว่าจะสำเร็จ
-                    for model_name in active_models:
-                        try:
-                            chat_completion = client.chat.completions.create(
-                                messages=[
-                                    {"role": "system", "content": "คุณคือผู้ช่วย AI ของ Coway Thailand ตอบเป็นภาษาไทยอย่างแม่นยำ"},
-                                    {"role": "user", "content": prompt}
-                                ],
-                                model=model_name,
-                            )
-                            answer = chat_completion.choices[0].message.content
-                            if answer:
-                                break
-                        except Exception as err:
-                            last_err = err
-                            continue
-
-                    if answer:
-                        st.markdown(answer)
-                        st.session_state.messages.append({"role": "assistant", "content": answer})
-                    else:
-                        st.error(f"เกิดข้อผิดพลาดในการเรียกใช้โมเดล: {last_err}")
+                        chat_completion = client.chat.completions.create(
+                            messages=[
+                                {"role": "system", "content": "คุณคือผู้ช่วย AI ของ Coway Thailand ตอบเป็นภาษาไทยอย่างแม่นยำ"},
+                                {"role": "user", "content": prompt}
+                            ],
+                            model="llama-3.1-8b-instant",
+                        )
+                        answer = chat_completion.choices[0].message.content
+                        if answer:
+                            st.markdown(answer)
+                            st.session_state.messages.append({"role": "assistant", "content": answer})
+                        else:
+                            st.error("ไม่สามารถสร้างคำตอบได้ กรุณาลองใหม่อีกครั้ง")
+                    except Exception as err:
+                        st.error(f"เกิดข้อผิดพลาดในการเรียกใช้โมเดล: {err}")
 
     except Exception as e:
         st.error(f"เกิดข้อผิดพลาดในการเชื่อมต่อ: {e}")
