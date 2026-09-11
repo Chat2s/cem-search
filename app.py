@@ -1,5 +1,5 @@
 import os
-import tempfile
+import glob
 import pandas as pd
 import streamlit as st
 from groq import Groq
@@ -9,7 +9,7 @@ st.set_page_config(page_title="CXM Internal AI Search", page_icon="🔍", layout
 st.title("🔍 CXM Knowledge AI Search - Coway Thailand")
 st.caption("ระบบค้นหาข้อมูลและตอบคำถามภายในแผนก Customer Experience Management")
 
-# ดึง API Key จาก Secrets ถ้ามี หรือรับจาก Sidebar
+# ดึง API Key จาก Secrets
 api_key_secret = st.secrets.get("GROQ_API_KEY", "")
 
 with st.sidebar:
@@ -19,64 +19,70 @@ with st.sidebar:
         st.success("🔑 เชื่อมต่อ Groq API Key กลางเรียบร้อยแล้ว")
     else:
         groq_api_key = st.text_input("กรอก Groq API Key (ขึ้นต้นด้วย gsk_...):", type="password")
-        
-    uploaded_files = st.file_uploader(
-        "อัปโหลดไฟล์คู่มือ / เอกสาร (PDF, Word, Excel):",
-        type=["pdf", "docx", "xlsx", "csv"],
-        accept_multiple_files=True
-    )
 
-# --- 2. ฟังก์ชันแปลงไฟล์เป็นเนื้อหาข้อความ ---
-def extract_text_from_files(files):
+# --- 2. ฟังก์ชันดึงเนื้อหาจากไฟล์ทั้งหมดในระบบ ---
+@st.cache_data(show_spinner=False)
+def load_all_documents():
     combined_text = ""
-    for uploaded_file in files:
-        file_ext = os.path.splitext(uploaded_file.name)[1].lower()
-        combined_text += f"\n--- เริ่มต้นเอกสาร: {uploaded_file.name} ---\n"
-        
-        with tempfile.NamedTemporaryFile(delete=False, suffix=file_ext) as tmp_file:
-            tmp_file.write(uploaded_file.getvalue())
-            tmp_path = tmp_file.name
+    supported_extensions = ["*.xlsx", "*.csv", "*.pdf", "*.docx"]
+    file_paths = []
+    for ext in supported_extensions:
+        file_paths.extend(glob.glob(ext))
+
+    if not file_paths:
+        return "", []
+
+    file_names = []
+    for file_path in file_paths:
+        file_name = os.path.basename(file_path)
+        file_names.append(file_name)
+        file_ext = os.path.splitext(file_name)[1].lower()
+        combined_text += f"\n--- เริ่มต้นเอกสาร: {file_name} ---\n"
 
         try:
             if file_ext in [".xlsx", ".csv"]:
-                df = pd.read_excel(tmp_path) if file_ext == ".xlsx" else pd.read_csv(tmp_path)
+                df = pd.read_excel(file_path) if file_ext == ".xlsx" else pd.read_csv(file_path)
                 for index, row in df.iterrows():
                     row_str = " | ".join([f"{col}: {val}" for col, val in row.items() if pd.notna(val)])
                     combined_text += f"แถวที่ {index + 1}: {row_str}\n"
 
             elif file_ext == ".pdf":
                 from langchain_community.document_loaders import PyPDFLoader
-                loader = PyPDFLoader(tmp_path)
+                loader = PyPDFLoader(file_path)
                 docs = loader.load()
                 for doc in docs:
                     combined_text += doc.page_content + "\n"
 
             elif file_ext == ".docx":
                 from langchain_community.document_loaders import Docx2txtLoader
-                loader = Docx2txtLoader(tmp_path)
+                loader = Docx2txtLoader(file_path)
                 docs = loader.load()
                 for doc in docs:
                     combined_text += doc.page_content + "\n"
         except Exception as e:
-            combined_text += f"ไม่สามารถอ่านไฟล์นี้ได้: {e}\n"
-        finally:
-            if os.path.exists(tmp_path):
-                os.remove(tmp_path)
-                
-        combined_text += f"--- จบเอกสาร: {uploaded_file.name} ---\n\n"
-    return combined_text
+            combined_text += f"ไม่สามารถอ่านไฟล์ {file_name} ได้: {e}\n"
+            
+        combined_text += f"--- จบเอกสาร: {file_name} ---\n\n"
+
+    return combined_text, file_names
+
+# โหลดเอกสารในระบบทันที
+context_data, loaded_files = load_all_documents()
+
+with st.sidebar:
+    st.subheader("📚 เอกสารที่มีในระบบ")
+    if loaded_files:
+        for f in loaded_files:
+            st.markdown(f"- 📄 `{f}`")
+    else:
+        st.warning("ไม่พบไฟล์เอกสารในระบบ (โปรดอัปโหลดไฟล์ขึ้น GitHub)")
 
 # --- 3. ประมวลผลและตอบคำถามด้วย Groq ---
-if uploaded_files and groq_api_key:
+if groq_api_key:
     clean_key = groq_api_key.strip()
 
     try:
         client = Groq(api_key=clean_key)
-        
-        if "context_data" not in st.session_state or st.sidebar.button("🔄 อัปเดต/โหลดไฟล์ใหม่"):
-            with st.spinner("กำลังอ่านและประมวลผลเอกสารทั้งหมด..."):
-                st.session_state.context_data = extract_text_from_files(uploaded_files)
-            st.sidebar.success("อ่านเอกสารสำเร็จพร้อมใช้งาน!")
 
         if "messages" not in st.session_state:
             st.session_state.messages = []
@@ -91,13 +97,13 @@ if uploaded_files and groq_api_key:
                 st.markdown(user_query)
 
             with st.chat_message("assistant"):
-                with st.spinner("กำลังวิเคราะห์ข้อมูลและหาคำตอบ..."):
+                with st.spinner("กำลังค้นหาข้อมูลและวิเคราะห์คำตอบ..."):
                     prompt = f"""คุณคือผู้ช่วย AI ประจำแผนก Customer Experience Management (CXM) ของบริษัท Coway Thailand
 โปรดใช้ข้อมูลบริบทด้านล่างนี้ตอบคำถามของผู้ใช้อย่างสุภาพ สรุปใจความสำคัญเป็นข้อๆ และแม่นยำ
-หากไม่มีข้อมูลตอบในบริบท ให้แจ้งตรงๆ ว่า 'ไม่พบข้อมูลดังกล่าวในเอกสารที่อัปโหลด' ห้ามคาดเดาข้อมูลเอง
+หากไม่มีข้อมูลตอบในบริบท ให้แจ้งตรงๆ ว่า 'ไม่พบข้อมูลดังกล่าวในเอกสาร' ห้ามคาดเดาข้อมูลเอง
 
 บริบทข้อมูลจากเอกสารทั้งหมด:
-{st.session_state.context_data}
+{context_data}
 
 คำถามจากผู้ใช้:
 {user_query}
@@ -137,4 +143,4 @@ if uploaded_files and groq_api_key:
         st.error(f"เกิดข้อผิดพลาดในการเชื่อมต่อ: {e}")
 
 else:
-    st.info("👈 โปรดอัปโหลดไฟล์เอกสารที่เมนูด้านซ้ายเพื่อเริ่มต้นใช้งาน")
+    st.info("👈 โปรดตั้งค่า Groq API Key ใน Secrets เพื่อเริ่มต้นใช้งาน")
