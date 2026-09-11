@@ -26,7 +26,7 @@ with st.sidebar:
         accept_multiple_files=True
     )
 
-# --- 2. ฟังก์ชันวิเคราะห์และนับจำนวนด้วย Pandas ---
+# --- 2. ฟังก์ชันนับเคสแบบเป๊ะ 100% (Strict Date & Column Parsing) ---
 @st.cache_data(show_spinner=False)
 def get_all_file_paths():
     supported_extensions = ["*.xlsx", "*.csv", "*.pdf", "*.docx"]
@@ -46,7 +46,7 @@ with st.sidebar:
     else:
         st.warning("ไม่พบไฟล์เอกสารในระบบ")
 
-def analyze_and_summarize(query):
+def analyze_and_summarize_exact(query):
     all_paths = get_all_file_paths()
     
     if uploaded_files:
@@ -73,20 +73,29 @@ def analyze_and_summarize(query):
                 for sheet in sheet_names:
                     df = pd.read_excel(path, sheet_name=sheet) if xls else pd.read_csv(path)
                     total_rows = len(df)
-                    summary_text += f"\n📁 **ไฟล์: {file_name} (แผ่นงาน: {sheet})** - รวมทั้งหมด {total_rows:,} รายการ\n"
+                    summary_text += f"\n📁 **ไฟล์: {file_name} (แผ่นงาน: {sheet})** - รายการทั้งหมด {total_rows:,} แถว\n"
 
-                    df_str = df.astype(str)
+                    # ค้นหาคอลัมน์ที่เป็นวันที่สร้างเคส หรือ วันที่รับเรื่อง
+                    date_cols = [c for c in df.columns if any(k in str(c).lower() for k in ["created", "date", "วัน", "เวลา", "time"])]
+                    
+                    m9_exact_count = 0
+                    if date_cols:
+                        for col in date_cols:
+                            # แปลงคอลัมน์เป็นรูปแบบ Date จริงๆ (ป้องกันการไปนับเบอร์โทร 09x)
+                            parsed_dates = pd.to_datetime(df[col], errors='coerce', dayfirst=True)
+                            # กรองเฉพาะเคสปี 2026 และ เดือน 9 (กันยายน)
+                            m9_matches = parsed_dates[(parsed_dates.dt.month == 9) & (parsed_dates.dt.year == 2026)]
+                            count = len(m9_matches)
+                            if count > 0:
+                                summary_text += f"  - นับจากคอลัมน์ `{col}` (เดือน 9/2026): **{count:,} เคส**\n"
+                                m9_exact_count = max(m9_exact_count, count)
 
-                    # สแกนหาคำว่า 09, sep, กันยายน, ก.ย.
-                    m9_mask = df_str.apply(lambda col: col.str.contains('09-202|/09/|-09-|sep|september|กันยายน|ก.ย.', case=False, na=False)).any(axis=1)
-                    count_m9 = m9_mask.sum()
-                    summary_text += f"- เคสในเดือน 9 (กันยายน / Sep / 09): **{count_m9:,} เคส**\n"
-
-                    q_words = [w.strip() for w in query.split() if len(w.strip()) > 1]
-                    if q_words:
-                        kw_mask = df_str.apply(lambda col: col.str.contains('|'.join(q_words), case=False, na=False)).any(axis=1)
-                        count_kw = kw_mask.sum()
-                        summary_text += f"- เคสที่ตรงกับคำค้นหา '{query}': **{count_kw:,} เคส**\n"
+                    # กรณีไม่พบคอลัมน์วันที่ หรือนับแบบ Text Matching ป้องกันตกหล่น
+                    if m9_exact_count == 0:
+                        df_str = df.astype(str)
+                        # กรองเฉพาะที่มี Pattern วันที่ เช่น 09-2026 หรือ /09/2026 เท่านั้น (ไม่เอาเบอร์โทร)
+                        strict_m9 = df_str.apply(lambda c: c.str.contains('09-2026|/09/2026|2026-09|-09-2026', case=False, na=False)).any(axis=1)
+                        summary_text += f"  - นับตาม Date Pattern เดือน 9/2026: **{strict_m9.sum():,} เคส**\n"
 
             except Exception as e:
                 summary_text += f"ไม่สามารถประมวลผลไฟล์ {file_name} ได้: {e}\n"
@@ -113,14 +122,14 @@ if groq_api_key:
                 st.markdown(user_query)
 
             with st.chat_message("assistant"):
-                with st.spinner("กำลังคำนวณและประมวลผลยอดสถิติจากทุกไฟล์..."):
-                    analytics_summary = analyze_and_summarize(user_query)
+                with st.spinner("กำลังคำนวณและตรวจสอบวันที่ในคอลัมน์อย่างแม่นยำ..."):
+                    analytics_summary = analyze_and_summarize_exact(user_query)
 
                     prompt = f"""คุณคือผู้ช่วย AI ประจำแผนก Customer Experience Management (CXM) ของบริษัท Coway Thailand
-โปรดใช้สรุปผลสถิติที่คำนวณจากไฟล์เอกสารด้านล่างนี้ ตอบคำถามของผู้ใช้อย่างเรียบร้อย สุภาพ และชัดเจน
-รายงานตัวเลขตามผลสรุปสถิติที่คำนวณมาได้อย่างแม่นยำ 100% ห้ามตอบว่าไม่มีข้อมูลหากมีตัวเลขปรากฏอยู่
+โปรดใช้สรุปผลสถิติตัวเลขที่คำนวณได้จริงจากคอลัมน์วันที่ด้านล่างนี้ ตอบคำถามของผู้ใช้
+สรุปตัวเลขตามคอลัมน์วันที่แยกตามไฟล์อย่างแม่นยำ 100% ตรงตามไฟล์ Excel
 
-สรุปผลสถิติตัวเลขจากระบบ:
+สรุปสถิติตัวเลขจริงจากคอลัมน์วันที่:
 {analytics_summary}
 
 คำถามจากผู้ใช้:
@@ -129,7 +138,6 @@ if groq_api_key:
                     answer = None
                     last_err = None
 
-                    # 1. ดึงรายชื่อโมเดลที่ใช้งานได้จริงในขณะนั้นโดยอัตโนมัติ
                     try:
                         models_data = client.models.list()
                         active_models = [
@@ -139,13 +147,7 @@ if groq_api_key:
                     except Exception:
                         active_models = []
 
-                    # 2. รายการโมเดลสำรอง
-                    fallback_models = [
-                        "llama-3.1-8b-instant",
-                        "llama-3.3-70b-versatile",
-                        "groq/compound"
-                    ]
-
+                    fallback_models = ["llama-3.1-8b-instant", "llama-3.3-70b-versatile", "groq/compound"]
                     candidate_models = active_models + [m for m in fallback_models if m not in active_models]
 
                     for model_name in candidate_models:
