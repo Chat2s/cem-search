@@ -1,0 +1,7 @@
+streamlit
+pandas
+openpyxl
+groq
+langchain-community
+docx2txt
+pypdf
