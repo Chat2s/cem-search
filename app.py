@@ -155,23 +155,46 @@ if groq_api_key:
 คำถามจากผู้ใช้:
 {user_query}
 """
+                    answer = None
+                    last_err = None
+
+                    # 1. ดึงรายชื่อโมเดลที่ใช้งานได้จริงจากระบบของ Groq แบบอัตโนมัติ
                     try:
-                        # เรียกใช้โมเดลมาตรฐานที่เร็วและรองรับบัญชีทั่วไป
-                        chat_completion = client.chat.completions.create(
-                            messages=[
-                                {"role": "system", "content": "คุณคือผู้ช่วย AI ของ Coway Thailand ตอบเป็นภาษาไทยอย่างแม่นยำ"},
-                                {"role": "user", "content": prompt}
-                            ],
-                            model="llama-3.1-8b-instant",
-                        )
-                        answer = chat_completion.choices[0].message.content
-                        if answer:
-                            st.markdown(answer)
-                            st.session_state.messages.append({"role": "assistant", "content": answer})
-                        else:
-                            st.error("ไม่สามารถสร้างคำตอบได้ กรุณาลองใหม่อีกครั้ง")
-                    except Exception as err:
-                        st.error(f"เกิดข้อผิดพลาดในการเรียกใช้โมเดล: {err}")
+                        models_list = client.models.list()
+                        # กรองเอาโมเดลประมวลผลข้อความหลักที่เปิดใช้งานอยู่
+                        active_models = [
+                            m.id for m in models_list.data 
+                            if m.id and not any(x in m.id.lower() for x in ["whisper", "guard", "orpheus", "vision", "audio"])
+                        ]
+                    except Exception:
+                        active_models = []
+
+                    # หากดึงผ่าน API ไม่สำเร็จ ให้ใช้ fallback list ล่าสุด
+                    if not active_models:
+                        active_models = ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "groq/compound", "llama-3.1-8b-instant"]
+
+                    # 2. ทดลองส่งคำถามไปยังโมเดลที่ใช้งานได้จริงจนกว่าจะสำเร็จ
+                    for model_name in active_models:
+                        try:
+                            chat_completion = client.chat.completions.create(
+                                messages=[
+                                    {"role": "system", "content": "คุณคือผู้ช่วย AI ของ Coway Thailand ตอบเป็นภาษาไทยอย่างแม่นยำ"},
+                                    {"role": "user", "content": prompt}
+                                ],
+                                model=model_name,
+                            )
+                            answer = chat_completion.choices[0].message.content
+                            if answer:
+                                break
+                        except Exception as err:
+                            last_err = err
+                            continue
+
+                    if answer:
+                        st.markdown(answer)
+                        st.session_state.messages.append({"role": "assistant", "content": answer})
+                    else:
+                        st.error(f"เกิดข้อผิดพลาดในการเรียกใช้โมเดล: {last_err}")
 
     except Exception as e:
         st.error(f"เกิดข้อผิดพลาดในการเชื่อมต่อ: {e}")
